@@ -23,7 +23,7 @@ from market_model import (
 
 
 st.set_page_config(
-    page_title="Marktpsychologie-Simulator 2.0",
+    page_title="Marktpsychologie-Simulator 2.1",
     page_icon="🧠",
     layout="wide",
 )
@@ -58,6 +58,103 @@ def current_params() -> ModelParams:
 def format_percent(value: float, decimals: int = 1) -> str:
     return f"{value * 100:.{decimals}f} %"
 
+PRESET_DESCRIPTIONS = {
+    "Benutzerdefiniert": (
+        "Alle Regler sind frei einstellbar. Diese Variante eignet sich zum Experimentieren."
+    ),
+    "1. Panik-Crash / Liquiditätsentzug": (
+        "Anleger reagieren schnell panisch, Fonds müssen verkaufen und HFT-Liquidität "
+        "verschwindet früh. Das Szenario ist bewusst krisenanfällig."
+    ),
+    "2. Aggressive Zentralbank": (
+        "Die Zentralbank greift schon bei kleinen Verlusten ein und stützt den Kurs deutlich."
+    ),
+    "3. Gefährlicher Fondshebel": (
+        "Fonds arbeiten mit hohem Hebel. Gewinne können verstärkt werden, Verluste und "
+        "Zwangsverkäufe aber ebenfalls."
+    ),
+    "4. Ruhiger Aufwärtstrend": (
+        "Niedrige Schwankungen, robuste Liquidität und zurückhaltende Marktteilnehmer "
+        "begünstigen einen stabileren Verlauf."
+    ),
+}
+
+
+def explain_slider(
+    left: str,
+    right: str,
+    effect: str,
+    current: str | None = None,
+    warning: str | None = None,
+) -> None:
+    """Zeigt eine einsteigerfreundliche Erklärung direkt unter einem Regler."""
+
+    if not st.session_state.get("beginner_mode", True):
+        return
+    st.caption(f"⬅️ **Links:** {left}  ·  **Rechts:** {right} ➡️")
+    st.caption(f"**Typische Wirkung:** {effect}")
+    if current:
+        st.caption(f"**Aktuell:** {current}")
+    if warning:
+        st.warning(warning)
+
+
+def market_regime_text(params: ModelParams) -> list[str]:
+    """Übersetzt die wichtigsten Parameter in verständliche Alltagssprache."""
+
+    if params.fundamental_drift > 0.00015:
+        drift = "Das Marktumfeld besitzt einen leichten positiven Grundtrend."
+    elif params.fundamental_drift < -0.00015:
+        drift = "Das Marktumfeld besitzt einen negativen Grundtrend."
+    else:
+        drift = "Das Marktumfeld hat nahezu keinen Grundtrend."
+
+    if params.fundamental_volatility < 0.003:
+        vola = "Die normalen täglichen Schwankungen sind niedrig."
+    elif params.fundamental_volatility < 0.008:
+        vola = "Die normalen täglichen Schwankungen sind mittel."
+    else:
+        vola = "Die normalen täglichen Schwankungen sind hoch."
+
+    if params.retail_panic_threshold > -0.03 or params.retail_panic_sell > 0.35:
+        retail = "Privatanleger sind panikanfällig und können Rückgänge deutlich verstärken."
+    elif params.retail_panic_threshold < -0.08 and params.retail_panic_sell < 0.15:
+        retail = "Privatanleger reagieren vergleichsweise gelassen auf Kursverluste."
+    else:
+        retail = "Privatanleger reagieren moderat auf Angst und Gier."
+
+    if params.fund_leverage_limit >= 1.6:
+        funds = "Fonds dürfen einen hohen Hebel nutzen; Gewinne und Verluste werden verstärkt."
+    elif params.fund_leverage_limit <= 1.1:
+        funds = "Fonds sind defensiv eingestellt und nutzen kaum zusätzlichen Hebel."
+    else:
+        funds = "Fonds nutzen einen mittleren Hebel."
+
+    if params.hft_capital * params.hft_liquidity_factor > 700 and params.hft_vix_shutdown >= 50:
+        hft = "Die Marktliquidität ist robust; HFTs bleiben auch bei größerer Angst aktiv."
+    elif params.hft_vix_shutdown <= 30:
+        hft = "HFTs schalten früh ab; in Stressphasen kann die Liquidität schnell sinken."
+    else:
+        hft = "Die HFT-Liquidität ist mittelstark."
+
+    if params.cb_intervention_threshold <= 0.05:
+        cb = "Die Zentralbank greift sehr früh ein und begrenzt kleinere Rückgänge."
+    elif params.cb_intervention_threshold >= 0.18:
+        cb = "Die Zentralbank wartet lange und greift erst bei schweren Verlusten ein."
+    else:
+        cb = "Die Zentralbank greift bei deutlichen, aber noch nicht extremen Verlusten ein."
+
+    return [drift, vola, retail, funds, hft, cb]
+
+
+def render_plain_language_summary(params: ModelParams) -> None:
+    with st.expander("🧭 Was bedeuten diese Einstellungen in Alltagssprache?", expanded=True):
+        st.markdown("\n".join(f"- {line}" for line in market_regime_text(params)))
+        st.caption(
+            "Diese Aussagen beschreiben die eingestellten Mechanismen. Sie garantieren kein "
+            "bestimmtes Ergebnis, weil der Zufallspfad weiterhin eine Rolle spielt."
+        )
+
 
 def render_model_explanation() -> None:
     with st.expander("Wie das Modell den Kurs berechnet"):
@@ -84,23 +181,65 @@ def render_model_explanation() -> None:
 
 def render_sidebar() -> bool:
     st.sidebar.header("⚙️ Steuerungszentrale")
+    st.sidebar.toggle(
+        "🧭 Einsteiger-Erklärungen anzeigen",
+        value=True,
+        key="beginner_mode",
+        help="Blendet unter jedem Regler eine Erklärung für die linke und rechte Richtung ein.",
+    )
     st.sidebar.selectbox(
         "Szenario",
         options=list(PRESETS),
         key="scenario",
         on_change=apply_selected_scenario,
+        help="Ein Szenario lädt eine vollständige, in sich abgestimmte Parameterkombination.",
     )
+    st.sidebar.info(PRESET_DESCRIPTIONS[st.session_state["scenario"]])
 
     is_preset = st.session_state["scenario"] != "Benutzerdefiniert"
     if is_preset:
-        st.sidebar.info(
-            "Das Preset setzt alle Modellparameter vollständig. Tage und Seed bleiben editierbar."
+        st.sidebar.caption(
+            "🔒 Im Preset sind die Modellregler gesperrt. Simulationslänge und Seed bleiben editierbar."
         )
 
-    with st.sidebar.form("parameter_form"):
+    with st.sidebar:
+        if st.session_state.get("beginner_mode", True):
+            st.markdown(
+                "**So liest du die Regler:** Links bedeutet den kleineren Wert, rechts den "
+                "größeren Wert. Entscheidend ist nicht immer ›gut oder schlecht‹, sondern "
+                "welcher Mechanismus dadurch stärker oder schwächer wird."
+            )
+
         with st.expander("0. Laufsteuerung", expanded=True):
-            st.slider("Simulationslänge", 100, 2_000, step=50, key="days")
-            st.number_input("Zufalls-Seed", 0, 2_147_483_647, step=1, key="seed")
+            st.slider(
+                "Simulationslänge (Tage)",
+                100,
+                2_000,
+                step=50,
+                key="days",
+                help="Anzahl der simulierten Handelstage. Rund 250 Tage entsprechen ungefähr einem Börsenjahr.",
+            )
+            explain_slider(
+                "kürzerer Lauf, weniger Ereignisse",
+                "längerer Lauf, mehr Krisen- und Erholungsphasen möglich",
+                "Die Länge verändert nicht die Regeln, sondern wie lange sie beobachtet werden.",
+                f"{int(st.session_state['days'])} Tage ≈ {st.session_state['days'] / 250:.1f} Börsenjahre",
+            )
+
+            st.number_input(
+                "Zufalls-Seed",
+                0,
+                2_147_483_647,
+                step=1,
+                key="seed",
+                help="Gleicher Seed plus gleiche Parameter erzeugen denselben Zufallspfad.",
+            )
+            explain_slider(
+                "anderer Zufallspfad",
+                "anderer Zufallspfad",
+                "Der Seed verändert nur die konkrete Folge zufälliger Ereignisse, nicht die Modellregeln.",
+                f"Seed {int(st.session_state['seed'])}",
+            )
 
         with st.expander("1. Exogenes Marktumfeld", expanded=True):
             st.slider(
@@ -111,7 +250,15 @@ def render_sidebar() -> bool:
                 key="fundamental_drift",
                 format="%.5f",
                 disabled=is_preset,
+                help="Langfristiger täglicher Grundtrend vor Psychologie und Zufallsschwankungen.",
             )
+            explain_slider(
+                "negativer Grundtrend",
+                "positiver Grundtrend",
+                "Mehr Drift verschiebt die langfristige Tendenz nach oben; weniger Drift nach unten.",
+                format_percent(float(st.session_state['fundamental_drift']), 3) + " pro Tag",
+            )
+
             st.slider(
                 "Normale Tagesvolatilität",
                 0.0000,
@@ -120,7 +267,15 @@ def render_sidebar() -> bool:
                 key="fundamental_volatility",
                 format="%.4f",
                 disabled=is_preset,
+                help="Stärke des normalen täglichen Zufallsrauschens.",
             )
+            explain_slider(
+                "ruhigere Kursbewegungen",
+                "stärkere tägliche Ausschläge",
+                "Höhere Volatilität erhöht sowohl Gewinn- als auch Verlustrisiken und treibt meist den VIX.",
+                format_percent(float(st.session_state['fundamental_volatility']), 2) + " typische Tagesstreuung",
+            )
+
             st.slider(
                 "Sprungwahrscheinlichkeit",
                 0.000,
@@ -129,7 +284,15 @@ def render_sidebar() -> bool:
                 key="jump_probability",
                 format="%.3f",
                 disabled=is_preset,
+                help="Wahrscheinlichkeit eines außergewöhnlichen Sprungs an einem einzelnen Tag.",
             )
+            explain_slider(
+                "seltene Sonderschocks",
+                "häufige Sonderschocks",
+                "Der Regler bestimmt, wie oft außergewöhnliche Ereignisse auftreten, nicht deren Richtung.",
+                format_percent(float(st.session_state['jump_probability']), 1) + " pro Tag",
+            )
+
             st.slider(
                 "Mittlere Sprungrendite",
                 -0.100,
@@ -138,7 +301,15 @@ def render_sidebar() -> bool:
                 key="jump_mean",
                 format="%.3f",
                 disabled=is_preset,
+                help="Durchschnittliche Richtung seltener Sprungereignisse.",
             )
+            explain_slider(
+                "Sprünge sind im Mittel negativ",
+                "Sprünge sind im Mittel positiv",
+                "Negative Werte erzeugen einen Crash-Bias; positive Werte einen Rallye-Bias.",
+                format_percent(float(st.session_state['jump_mean']), 1) + " mittlere Sprungrendite",
+            )
+
             st.slider(
                 "Sprungvolatilität",
                 0.000,
@@ -147,7 +318,15 @@ def render_sidebar() -> bool:
                 key="jump_volatility",
                 format="%.3f",
                 disabled=is_preset,
+                help="Streuung und Unberechenbarkeit der seltenen Sprünge.",
             )
+            explain_slider(
+                "ähnlich große Sprünge",
+                "sehr unterschiedlich große Sprünge",
+                "Höhere Werte machen Extremereignisse unberechenbarer und können sehr große Ausschläge erzeugen.",
+                format_percent(float(st.session_state['jump_volatility']), 1) + " Sprungstreuung",
+            )
+
             st.slider(
                 "Hartes Tageslimit",
                 0.010,
@@ -156,7 +335,15 @@ def render_sidebar() -> bool:
                 key="daily_return_cap",
                 format="%.3f",
                 disabled=is_preset,
+                help="Maximal erlaubte absolute Tagesrendite nach Addition aller Modellkomponenten.",
             )
+            explain_slider(
+                "Tagesbewegungen werden früh begrenzt",
+                "größere Tagesbewegungen sind erlaubt",
+                "Ein niedriges Limit dämpft Extremtage künstlich; ein hohes Limit lässt das Modell freier laufen.",
+                "maximal ±" + format_percent(float(st.session_state['daily_return_cap']), 1) + " pro Tag",
+            )
+
             st.slider(
                 "Orderflow-Preiswirkung",
                 0.000,
@@ -165,28 +352,101 @@ def render_sidebar() -> bool:
                 key="orderflow_impact",
                 format="%.3f",
                 disabled=is_preset,
+                help="Wie stark Käufe und Verkäufe der simulierten Anleger den Kurs bewegen.",
+            )
+            explain_slider(
+                "Psychologie bewegt den Kurs kaum",
+                "Käufe und Verkäufe bewegen den Kurs stark",
+                "Dieser Regler bestimmt, wie wichtig das Verhalten der Marktteilnehmer gegenüber dem Zufall ist.",
+                f"Wirkungsfaktor {float(st.session_state['orderflow_impact']):.3f}",
+                warning=(
+                    "Bei einem Wert nahe null wird aus dem Psychologie-Simulator überwiegend ein Zufallsmodell."
+                    if float(st.session_state['orderflow_impact']) < 0.02
+                    else None
+                ),
             )
 
         with st.expander("2. Privatanleger"):
-            st.slider("Start-Aktienquote", 0.0, 1.0, step=0.05, key="retail_start", disabled=is_preset)
             st.slider(
-                "Gier-Schwelle",
+                "Start-Aktienquote",
+                0.0,
+                1.0,
+                step=0.05,
+                key="retail_start",
+                disabled=is_preset,
+                help="Anteil des vorgesehenen Privatanlegerkapitals, der zu Beginn in Aktien investiert ist.",
+            )
+            explain_slider(
+                "viel Bargeld, wenig Aktien",
+                "fast vollständig investiert",
+                "Eine hohe Startquote bedeutet mehr anfängliche Aktiennachfrage, aber weniger spätere Kaufreserve.",
+                format_percent(float(st.session_state['retail_start']), 0) + " investiert",
+            )
+
+            st.slider(
+                "Gier-Schwelle (5-Tage-Anstieg)",
                 0.005,
                 0.150,
                 step=0.005,
                 key="retail_greed_threshold",
                 disabled=is_preset,
+                help="Ab welchem 5-Tage-Anstieg Privatanleger zusätzliche Aktien kaufen.",
             )
+            explain_slider(
+                "Gier wird schon bei kleinen Anstiegen ausgelöst",
+                "erst starke Rallyes lösen Gier aus",
+                "Weiter links kaufen Privatanleger häufiger prozyklisch; weiter rechts reagieren sie seltener.",
+                "Kaufreaktion ab +" + format_percent(float(st.session_state['retail_greed_threshold']), 1),
+            )
+
             st.slider(
-                "Panik-Schwelle",
+                "Panik-Schwelle (5-Tage-Verlust)",
                 -0.200,
                 -0.005,
                 step=0.005,
                 key="retail_panic_threshold",
                 disabled=is_preset,
+                help="Ab welchem 5-Tage-Verlust Privatanleger panisch verkaufen.",
             )
-            st.slider("Panikverkauf", 0.0, 0.80, step=0.05, key="retail_panic_sell", disabled=is_preset)
-            st.slider("Gierkauf", 0.0, 0.50, step=0.02, key="retail_greed_buy", disabled=is_preset)
+            explain_slider(
+                "Panik erst nach sehr großem Verlust",
+                "Panik schon nach kleinem Verlust",
+                "Achtung: Weil die Werte negativ sind, bedeutet weiter rechts eine empfindlichere Panikreaktion.",
+                "Verkaufsreaktion ab " + format_percent(float(st.session_state['retail_panic_threshold']), 1),
+            )
+
+            st.slider(
+                "Panikverkauf (Quotenabbau)",
+                0.0,
+                0.80,
+                step=0.05,
+                key="retail_panic_sell",
+                disabled=is_preset,
+                help="Um wie viel die Aktienquote bei einer Panikreaktion reduziert wird.",
+            )
+            explain_slider(
+                "kleiner Verkauf",
+                "massiver Verkauf",
+                "Ein hoher Wert erzeugt bei Panik starken Verkaufsdruck und kann Abwärtsbewegungen verstärken.",
+                format_percent(float(st.session_state['retail_panic_sell']), 0) + " Quotenabbau je Panikreaktion",
+            )
+
+            st.slider(
+                "Gierkauf (Quotenaufbau)",
+                0.0,
+                0.50,
+                step=0.02,
+                key="retail_greed_buy",
+                disabled=is_preset,
+                help="Um wie viel die Aktienquote bei einer Gierreaktion erhöht wird.",
+            )
+            explain_slider(
+                "kleiner Zusatzkauf",
+                "massiver Zusatzkauf",
+                "Ein hoher Wert verstärkt Rallyes, kann aber auch Blasenbildung fördern.",
+                format_percent(float(st.session_state['retail_greed_buy']), 0) + " Quotenaufbau je Gierreaktion",
+            )
+
             st.slider(
                 "Rückkehr zur Normalquote",
                 0.0,
@@ -194,10 +454,32 @@ def render_sidebar() -> bool:
                 step=0.01,
                 key="retail_reversion",
                 disabled=is_preset,
+                help="Geschwindigkeit, mit der die Aktienquote ohne Panik oder Gier zum Ausgangswert zurückkehrt.",
+            )
+            explain_slider(
+                "veränderte Stimmung hält lange an",
+                "schnelle Rückkehr zum Ausgangszustand",
+                "Ein hoher Wert stabilisiert die Anlegerquote nach Schocks schneller.",
+                format_percent(float(st.session_state['retail_reversion']), 0) + " Rückkehr pro ruhigem Tag",
             )
 
         with st.expander("3. Fonds"):
-            st.slider("Start-Hebel", 0.30, 2.50, step=0.05, key="fund_start", disabled=is_preset)
+            st.slider(
+                "Start-Hebel",
+                0.30,
+                2.50,
+                step=0.05,
+                key="fund_start",
+                disabled=is_preset,
+                help="Anfängliche Aktienexponierung der Fonds. 1,0 entspricht ungefähr ungehebelt.",
+            )
+            explain_slider(
+                "defensiv oder unterinvestiert",
+                "stark gehebelt",
+                "Ein höherer Starthebel verstärkt sowohl Gewinne als auch Verluste der Fondspositionen.",
+                f"{float(st.session_state['fund_start']):.2f}× Exponierung",
+            )
+
             st.slider(
                 "Maximaler Hebel",
                 0.30,
@@ -205,10 +487,68 @@ def render_sidebar() -> bool:
                 step=0.05,
                 key="fund_leverage_limit",
                 disabled=is_preset,
+                help="Obergrenze für die Fondsexponierung.",
             )
-            st.slider("VIX-Schwelle", 15.0, 70.0, step=1.0, key="fund_vix_threshold", disabled=is_preset)
-            st.slider("Tägliche Abflussrate", 0.0, 0.60, step=0.01, key="fund_outflow_rate", disabled=is_preset)
-            st.slider("Trendfolge-Schritt", 0.0, 0.30, step=0.01, key="fund_trend_step", disabled=is_preset)
+            explain_slider(
+                "Fonds werden früh begrenzt",
+                "Fonds dürfen sehr große Risiken eingehen",
+                "Ein hohes Limit erhöht die mögliche prozyklische Verstärkung und das Deleveraging-Risiko.",
+                f"maximal {float(st.session_state['fund_leverage_limit']):.2f}×",
+                warning=(
+                    "Der Start-Hebel darf nicht über dem maximalen Hebel liegen."
+                    if float(st.session_state['fund_start']) > float(st.session_state['fund_leverage_limit'])
+                    else None
+                ),
+            )
+
+            st.slider(
+                "VIX-Schwelle für Fondsstress",
+                15.0,
+                70.0,
+                step=1.0,
+                key="fund_vix_threshold",
+                disabled=is_preset,
+                help="Ab welchem VIX Fonds Mittelabflüsse und zusätzliches Deleveraging erleben.",
+            )
+            explain_slider(
+                "Fonds geraten schon bei geringer Angst unter Druck",
+                "erst extreme Angst löst Fondsstress aus",
+                "Eine niedrige Schwelle führt häufiger zu Abflüssen und Zwangsverkäufen.",
+                f"Stress ab VIX {float(st.session_state['fund_vix_threshold']):.0f}",
+            )
+
+            st.slider(
+                "Tägliche Abflussrate",
+                0.0,
+                0.60,
+                step=0.01,
+                key="fund_outflow_rate",
+                disabled=is_preset,
+                help="Anteil des Fondsvermögens, den Anleger an einem Stresstag abziehen.",
+            )
+            explain_slider(
+                "kaum Mittelabflüsse",
+                "sehr starke Mittelabflüsse",
+                "Höhere Abflüsse erzwingen größere Verkäufe und reduzieren das Fondsvermögen schneller.",
+                format_percent(float(st.session_state['fund_outflow_rate']), 0) + " des Fondsvermögens je Stresstag",
+            )
+
+            st.slider(
+                "Trendfolge-Schritt",
+                0.0,
+                0.30,
+                step=0.01,
+                key="fund_trend_step",
+                disabled=is_preset,
+                help="Wie stark Fonds ihre Aktienexponierung nach einer Rallye erhöhen.",
+            )
+            explain_slider(
+                "Fonds folgen Trends kaum",
+                "Fonds kaufen Rallyes aggressiv",
+                "Ein hoher Wert verstärkt Aufwärtstrends, erhöht aber späteres Rückschlagrisiko.",
+                f"+{float(st.session_state['fund_trend_step']):.2f} Hebelschritt nach starkem Anstieg",
+            )
+
             st.slider(
                 "Deleveraging-Schritt",
                 0.0,
@@ -216,6 +556,13 @@ def render_sidebar() -> bool:
                 step=0.01,
                 key="fund_deleverage_step",
                 disabled=is_preset,
+                help="Wie stark Fonds nach Verlusten oder bei hohem VIX ihre Exponierung abbauen.",
+            )
+            explain_slider(
+                "langsamer Risikoabbau",
+                "aggressiver Risikoabbau",
+                "Ein hoher Wert schützt den einzelnen Fonds, erzeugt aber kurzfristig starken Verkaufsdruck.",
+                f"−{float(st.session_state['fund_deleverage_step']):.2f} Hebelschritt bei Stress",
             )
 
         with st.expander("4. HFT / Liquidität"):
@@ -226,7 +573,15 @@ def render_sidebar() -> bool:
                 step=500.0,
                 key="hft_capital",
                 disabled=is_preset,
+                help="Kapitalbasis der automatisierten Liquiditätsanbieter.",
             )
+            explain_slider(
+                "wenig zusätzliche Liquidität",
+                "viel zusätzliche Liquidität",
+                "Mehr HFT-Kapital erhöht die Markttiefe und dämpft die Kurswirkung derselben Order.",
+                f"{float(st.session_state['hft_capital']):,.0f} Kapitaleinheiten".replace(",", "."),
+            )
+
             st.slider(
                 "HFT-Abschaltung bei VIX",
                 15.0,
@@ -234,7 +589,15 @@ def render_sidebar() -> bool:
                 step=1.0,
                 key="hft_vix_shutdown",
                 disabled=is_preset,
+                help="Ab welchem VIX die HFT-Liquidität vollständig aus dem Markt verschwindet.",
             )
+            explain_slider(
+                "HFTs schalten früh ab",
+                "HFTs bleiben auch in Krisen aktiv",
+                "Eine niedrige Schwelle erhöht die Gefahr eines plötzlichen Liquiditätsverlusts.",
+                f"Abschaltung ab VIX {float(st.session_state['hft_vix_shutdown']):.0f}",
+            )
+
             st.slider(
                 "Liquidität pro Kapitaleinheit",
                 0.0,
@@ -242,6 +605,13 @@ def render_sidebar() -> bool:
                 step=0.005,
                 key="hft_liquidity_factor",
                 disabled=is_preset,
+                help="Wie viel Markttiefe jede Einheit HFT-Kapital bereitstellt.",
+            )
+            explain_slider(
+                "HFT-Kapital wirkt wenig",
+                "HFT-Kapital erzeugt viel Markttiefe",
+                "Gemeinsam mit dem HFT-Kapital bestimmt dieser Regler, wie stark Orders gedämpft werden.",
+                f"Zusätzliche Markttiefe: {float(st.session_state['hft_capital']) * float(st.session_state['hft_liquidity_factor']):,.0f}".replace(",", "."),
             )
 
         with st.expander("5. Zentralbank"):
@@ -252,7 +622,15 @@ def render_sidebar() -> bool:
                 step=0.01,
                 key="cb_intervention_threshold",
                 disabled=is_preset,
+                help="Ab welchem Verlust über fünf Tage die Zentralbank eingreift.",
             )
+            explain_slider(
+                "Zentralbank greift früh ein",
+                "Zentralbank wartet auf einen schweren Einbruch",
+                "Eine niedrige Schwelle führt zu häufigeren Stützungsmaßnahmen; eine hohe lässt mehr Marktbereinigung zu.",
+                "Eingriff ab −" + format_percent(float(st.session_state['cb_intervention_threshold']), 0),
+            )
+
             st.slider(
                 "Kursimpuls beim Eingriff",
                 0.0,
@@ -260,7 +638,15 @@ def render_sidebar() -> bool:
                 step=0.005,
                 key="cb_purchase_return",
                 disabled=is_preset,
+                help="Direkter positiver Renditebeitrag eines Zentralbankeingriffs.",
             )
+            explain_slider(
+                "schwache Kursstützung",
+                "starker positiver Kurssprung",
+                "Ein höherer Wert macht jeden Eingriff mächtiger und kann Verluste schneller ausgleichen.",
+                "+" + format_percent(float(st.session_state['cb_purchase_return']), 1) + " am Eingriffstag",
+            )
+
             st.slider(
                 "VIX-Reduktion",
                 0.0,
@@ -268,9 +654,16 @@ def render_sidebar() -> bool:
                 step=0.05,
                 key="cb_vix_reduction",
                 disabled=is_preset,
+                help="Anteil, um den die Zentralbank den VIX bei einem Eingriff reduziert.",
+            )
+            explain_slider(
+                "Angst bleibt fast unverändert",
+                "Angst wird stark reduziert",
+                "Eine starke VIX-Reduktion hält HFTs eher aktiv und kann Fondsstress schneller beenden.",
+                format_percent(float(st.session_state['cb_vix_reduction']), 0) + " VIX-Reduktion",
             )
 
-        return st.form_submit_button("🚀 Simulation starten", type="primary")
+        return st.button("🚀 Simulation mit diesen Einstellungen starten", type="primary", width="stretch")
 
 
 def render_metrics(result) -> None:
@@ -502,7 +895,7 @@ def render_sensitivity(result) -> None:
 
 initialize_state()
 
-st.title("🧠 Marktpsychologie-Simulator 2.0")
+st.title("🧠 Marktpsychologie-Simulator 2.1")
 st.caption(
     "Reproduzierbares Agentenmodell mit expliziter Renditezerlegung, echter HFT-Liquidität, "
     "Fonds-Zwangsverkäufen und protokollierten Zentralbankinterventionen."
@@ -531,6 +924,12 @@ result = st.session_state.get("last_result")
 if result is None:
     st.info("Wähle ein Szenario oder passe die manuellen Parameter an und starte die Simulation.")
 else:
+    if current_params() != result.params:
+        st.warning(
+            "Die Regler wurden seit dem letzten Lauf verändert. Die unten angezeigten Ergebnisse "
+            "gehören noch zu den vorherigen Einstellungen. Starte die Simulation erneut, um sie zu aktualisieren."
+        )
+    render_plain_language_summary(result.params)
     render_metrics(result)
     tab1, tab2, tab3, tab4 = st.tabs(
         ["📈 Verlauf", "🔍 Ursachen", "📋 Ereignisse", "🧪 Sensitivität"]
