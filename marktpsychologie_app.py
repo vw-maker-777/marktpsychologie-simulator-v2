@@ -23,7 +23,7 @@ from market_model import (
 
 
 st.set_page_config(
-    page_title="Marktpsychologie-Simulator 2.1",
+    page_title="Marktpsychologie-Simulator 2.2",
     page_icon="🧠",
     layout="wide",
 )
@@ -666,6 +666,218 @@ def render_sidebar() -> bool:
         return st.button("🚀 Simulation mit diesen Einstellungen starten", type="primary", width="stretch")
 
 
+
+def _return_label(value: float) -> tuple[str, str]:
+    if value >= 0.20:
+        return "starke Rallye", "Der Kurs ist über den gesamten Zeitraum deutlich gestiegen."
+    if value >= 0.05:
+        return "positiver Verlauf", "Der Markt hat insgesamt einen klaren Gewinn erzielt."
+    if value > -0.05:
+        return "weitgehend seitwärts", "Gewinne und Verluste hielten sich über den Gesamtzeitraum ungefähr die Waage."
+    if value > -0.20:
+        return "schwacher Verlauf", "Der Markt hat einen spürbaren, aber noch begrenzten Verlust erlitten."
+    return "schwerer Einbruch", "Der Markt hat einen großen Teil seines Ausgangswerts verloren."
+
+
+def _drawdown_label(value: float) -> str:
+    severity = abs(value)
+    if severity < 0.05:
+        return "Die zwischenzeitlichen Rückgänge waren gering."
+    if severity < 0.15:
+        return "Zwischendurch gab es eine merkliche, aber überschaubare Verlustphase."
+    if severity < 0.30:
+        return "Der Markt erlebte zwischenzeitlich einen schweren Rückgang."
+    return "Der Markt durchlief zwischenzeitlich eine sehr schwere Verlustphase."
+
+
+def _vix_label(value: float) -> str:
+    if value < 20:
+        return "Die Angst im Markt blieb niedrig."
+    if value < 30:
+        return "Die Marktstimmung wurde zeitweise nervös, blieb aber kontrollierbar."
+    if value < 45:
+        return "Es gab mindestens eine ausgeprägte Stressphase."
+    return "Es trat eine extreme Angst- oder Panikphase auf."
+
+
+def build_plain_language_report(result) -> dict[str, str]:
+    """Erzeugt eine datenbasierte Erklärung eines einzelnen Simulationslaufs."""
+
+    data = result.data
+    metrics = result.metrics
+    params = result.params
+
+    final_return = float(metrics["final_return"])
+    max_drawdown = float(metrics["max_drawdown"])
+    max_vix = float(metrics["max_vix"])
+    label, return_sentence = _return_label(final_return)
+
+    daily_returns = data.loc[1:, "Rendite"]
+    best_idx = int(daily_returns.idxmax())
+    worst_idx = int(daily_returns.idxmin())
+    best_return = float(data.loc[best_idx, "Rendite"])
+    worst_return = float(data.loc[worst_idx, "Rendite"])
+    positive_share = float((daily_returns > 0).mean()) if len(daily_returns) else 0.0
+    realized_vol = float(daily_returns.std(ddof=1) * np.sqrt(250)) if len(daily_returns) > 1 else 0.0
+
+    prices = data["Kurs"].to_numpy(dtype=float)
+    running_peak = np.maximum.accumulate(prices)
+    drawdowns = prices / running_peak - 1.0
+    drawdown_day = int(np.argmin(drawdowns))
+    peak_day = int(np.argmax(prices[: drawdown_day + 1]))
+    peak_price = float(prices[peak_day])
+    trough_price = float(prices[drawdown_day])
+    end_price = float(prices[-1])
+    recovery_from_trough = end_price / trough_price - 1.0 if trough_price > 0 else 0.0
+
+    shares = {
+        "externe Markteinflüsse und Zufall": float(metrics["exogenous_share"]),
+        "Käufe und Verkäufe der Marktteilnehmer": float(metrics["orderflow_share"]),
+        "Zentralbankeingriffe": float(metrics["cb_share"]),
+    }
+    dominant_driver = max(shares, key=shares.get)
+    dominant_share = shares[dominant_driver]
+
+    exogenous_net = float(data["Exogener_Beitrag"].sum())
+    orderflow_net = float(data["Orderflow_Beitrag"].sum())
+    cb_net = float(data["Zentralbank_Beitrag"].sum())
+
+    if orderflow_net > 0.01:
+        orderflow_direction = "Die Käufe und Verkäufe der Anleger stützten den Markt in Summe."
+    elif orderflow_net < -0.01:
+        orderflow_direction = "Die Käufe und Verkäufe der Anleger belasteten den Markt in Summe."
+    else:
+        orderflow_direction = "Die Käufe und Verkäufe der Anleger waren über den gesamten Lauf annähernd ausgeglichen."
+
+    panic_days = int((data["Rendite_5T"] <= params.retail_panic_threshold).sum())
+    greed_days = int((data["Rendite_5T"] >= params.retail_greed_threshold).sum())
+    retail_start = float(data["Retail_Quote"].iloc[0])
+    retail_end = float(data["Retail_Quote"].iloc[-1])
+
+    forced_sale_days = int((data["Fonds_Zwangsverkauf"] < -1e-12).sum())
+    forced_sale_total = float(-data["Fonds_Zwangsverkauf"].clip(upper=0).sum())
+    fund_aum_end = float(data["Fonds_AUM"].iloc[-1])
+    fund_leverage_max = float(data["Fonds_Hebel"].max())
+
+    hft_off_days = int(metrics["hft_off_days"])
+    cb_interventions = int(metrics["cb_interventions"])
+    jump_events = int(metrics["jump_events"])
+
+    if final_return >= 0.05 and max_drawdown > -0.15:
+        lesson = (
+            "Der Lauf war insgesamt erfolgreich und die Verlustphasen blieben begrenzt. "
+            "Trotzdem ist dies nur ein einzelner Zufallspfad und keine Prognose."
+        )
+    elif final_return >= 0 and max_drawdown <= -0.20:
+        lesson = (
+            "Das Endergebnis ist positiv, aber der Weg dorthin war riskant. Ein Anleger hätte "
+            "zwischenzeitlich einen erheblichen Verlust aushalten müssen."
+        )
+    elif final_return < 0 and orderflow_net < -0.01:
+        lesson = (
+            "Der Verlust wurde nicht nur durch externe Schwankungen, sondern auch durch das Verhalten "
+            "der Marktteilnehmer verstärkt. Panik, Deleveraging oder Abflüsse wirkten prozyklisch."
+        )
+    elif final_return < 0:
+        lesson = (
+            "Der Verlust kam überwiegend aus dem externen Marktpfad. Die eingestellten Teilnehmermechanismen "
+            "konnten diesen Lauf nicht ausreichend stabilisieren."
+        )
+    else:
+        lesson = (
+            "Der Markt bewegte sich ohne eindeutigen langfristigen Gewinner. Für eine belastbare Aussage "
+            "sollten mehrere Seeds und die Sensitivitätsanalyse betrachtet werden."
+        )
+
+    headline = f"**{label.capitalize()}: {format_percent(final_return)} Gesamtrendite.** {return_sentence}"
+
+    course = (
+        f"Der Kurs startete bei 100,00 und endete bei {end_price:.2f}. "
+        f"{_drawdown_label(max_drawdown)} Der größte Rückgang vom vorherigen Höchststand betrug "
+        f"{format_percent(max_drawdown)}: vom Hoch bei {peak_price:.2f} an Tag {peak_day} "
+        f"bis auf {trough_price:.2f} an Tag {drawdown_day}. Danach erholte sich der Kurs "
+        f"um {format_percent(recovery_from_trough)} vom Tief. {_vix_label(max_vix)} "
+        f"Der beste Tag brachte {format_percent(best_return)}, der schlechteste Tag "
+        f"{format_percent(worst_return)}. {positive_share * 100:.0f} % der Tage waren positiv."
+    )
+
+    causes = (
+        f"Die größten durchschnittlichen Tagesbewegungen kamen aus **{dominant_driver}** "
+        f"(gemessener Beitragsanteil: {dominant_share * 100:.0f} %). "
+        f"{orderflow_direction} Additiv über alle Tage betrugen die protokollierten Beiträge ungefähr: "
+        f"extern {format_percent(exogenous_net)}, Orderflow {format_percent(orderflow_net)} und "
+        f"Zentralbank {format_percent(cb_net)}. Diese Summen dienen zur Ursachenanalyse; wegen "
+        f"täglicher Verzinsung entsprechen sie nicht exakt der Gesamtrendite."
+    )
+
+    participants = (
+        f"Privatanleger starteten mit einer Aktienquote von {format_percent(retail_start, 0)} und "
+        f"endeten bei {format_percent(retail_end, 0)}. Das Modell registrierte {panic_days} Paniktage "
+        f"und {greed_days} Giertage. Die Fonds erreichten maximal einen Hebel von {fund_leverage_max:.2f}×. "
+        f"An {forced_sale_days} Tagen gab es Zwangsverkäufe; das verbleibende Fondsvermögen lag am Ende "
+        f"bei {fund_aum_end * 100:.1f} % des Ausgangswerts. HFTs waren {hft_off_days} Tage abgeschaltet. "
+        f"Es traten {jump_events} Sprungereignisse und {cb_interventions} Zentralbankeingriffe auf."
+    )
+
+    risk = (
+        f"Die realisierte Schwankungsintensität lag annualisiert bei ungefähr "
+        f"{format_percent(realized_vol)}. {lesson}"
+    )
+
+    full_text = "\n\n".join(
+        [
+            "ERGEBNIS DER SIMULATION",
+            headline.replace("**", ""),
+            "MARKTVERLAUF\n" + course,
+            "URSACHEN\n" + causes.replace("**", ""),
+            "VERHALTEN DER MARKTTEILNEHMER\n" + participants,
+            "EINORDNUNG\n" + risk,
+            (
+                "HINWEIS\nDie Erklärung basiert ausschließlich auf diesem simulierten Lauf und den "
+                "im Modell protokollierten Komponenten. Sie ist keine Anlageberatung und keine Prognose."
+            ),
+        ]
+    )
+
+    return {
+        "headline": headline,
+        "course": course,
+        "causes": causes,
+        "participants": participants,
+        "risk": risk,
+        "full_text": full_text,
+    }
+
+
+def render_plain_language_result(result) -> None:
+    report = build_plain_language_report(result)
+    st.subheader("🗣️ Ergebnis in verständlicher Sprache")
+    st.success(report["headline"])
+
+    with st.container(border=True):
+        st.markdown("#### 1. Was ist mit dem Markt passiert?")
+        st.write(report["course"])
+
+        st.markdown("#### 2. Warum ist das passiert?")
+        st.write(report["causes"])
+
+        st.markdown("#### 3. Wie haben sich die Marktteilnehmer verhalten?")
+        st.write(report["participants"])
+
+        st.markdown("#### 4. Wie ist das Ergebnis einzuordnen?")
+        st.write(report["risk"])
+
+    st.caption(
+        "Die Erklärung basiert auf den tatsächlich gespeicherten Modellbeiträgen dieses Laufs. "
+        "Sie beschreibt keine reale Marktentwicklung und ist keine Anlageberatung."
+    )
+    st.download_button(
+        "📥 Erklärung als Text herunterladen",
+        data=report["full_text"].encode("utf-8"),
+        file_name="simulation_erklaerung.txt",
+        mime="text/plain",
+    )
+
 def render_metrics(result) -> None:
     data = result.data
     metrics = result.metrics
@@ -895,7 +1107,7 @@ def render_sensitivity(result) -> None:
 
 initialize_state()
 
-st.title("🧠 Marktpsychologie-Simulator 2.1")
+st.title("🧠 Marktpsychologie-Simulator 2.2")
 st.caption(
     "Reproduzierbares Agentenmodell mit expliziter Renditezerlegung, echter HFT-Liquidität, "
     "Fonds-Zwangsverkäufen und protokollierten Zentralbankinterventionen."
@@ -930,6 +1142,7 @@ else:
             "gehören noch zu den vorherigen Einstellungen. Starte die Simulation erneut, um sie zu aktualisieren."
         )
     render_plain_language_summary(result.params)
+    render_plain_language_result(result)
     render_metrics(result)
     tab1, tab2, tab3, tab4 = st.tabs(
         ["📈 Verlauf", "🔍 Ursachen", "📋 Ereignisse", "🧪 Sensitivität"]
